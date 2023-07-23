@@ -2,6 +2,8 @@ import pygame
 import random
 import heapq
 import datetime
+import math
+import os
 pygame.init()
 
 
@@ -13,6 +15,8 @@ taille_case = 40
 
 # Variable globale pour stocker le chemin prédit par l'algorithme A*
 chemin_predit = []
+
+moments_avant_mort = []
 
 # Variable globale pour stocker la tête du serpent précédente
 tete_precedente = (0,0)
@@ -123,21 +127,36 @@ def generer_nouvelle_position(serpent):
             return nouvelle_position
         
 # Fonction pour tracer le chemin prédit par l'algorithme A*
-def afficher_chemin_predit(chemin):
-    if chemin:
-        for i in range(1, len(chemin)):
-            # Coordonnées du milieu de chaque case du chemin prédit
-            milieu_x = (chemin[i - 1][0] + chemin[i][0]) // 2
-            milieu_y = (chemin[i - 1][1] + chemin[i][1]) // 2
-            pygame.draw.line(fenetre, (0, 0, 255), (chemin[i - 1][0], chemin[i - 1][1]), (milieu_x, milieu_y), 4)
-            pygame.draw.line(fenetre, (0, 0, 255), (milieu_x, milieu_y), (chemin[i][0], chemin[i][1]), 4)
+def afficher_chemin_predit(chemin, couleur):
+    if not chemin:
+        return
+
+    for i in range(1, len(chemin)):
+        x_actuel, y_actuel = chemin[i-1]
+        x_suivant, y_suivant = chemin[i]
+        pygame.draw.line(fenetre, couleur, (x_actuel + taille_case // 2, y_actuel + taille_case // 2),
+                         (x_suivant + taille_case // 2, y_suivant + taille_case // 2), 4)
 
 # Fonction pour calculer la distance entre deux points
 def distance(point1, point2):
     return abs(point1[0] - point2[0]) + abs(point1[1] - point2[1])
 
-# Fonction pour trouver le chemin le plus court avec l'algorithme A*
-def trouver_chemin(depart, arrivee, obstacles, serpent):
+# Fonction pour calculer la distance pondérée entre deux points
+def distance_ponderee(point1, point2,serpent):
+    # Utilisons la distance euclidienne comme base, et ajoutons un facteur de pondération
+    distance = math.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
+
+    # Récupérer la position du serpent
+    serpent_positions = serpent[:-1]  # Ignorer la tête du serpent pour éviter de se calculer lui-même
+
+    # Pondération supplémentaire pour garder le serpent compact
+    for position in serpent_positions:
+        distance += 0.1 / (distance + 1)  # Plus le serpent est proche, plus le coût augmente
+
+    return distance
+
+# Fonction pour trouver le chemin entre deux points en utilisant l'algorithme A* avec pénalité pour le voisinage du mur
+def trouver_chemin(depart, arrivee, obstacles):
     frontiere = [(0, depart)]
     heapq.heapify(frontiere)
     chemin_precedent = {depart: None}
@@ -162,7 +181,12 @@ def trouver_chemin(depart, arrivee, obstacles, serpent):
             if voisin in obstacles or voisin[0] < 0 or voisin[0] >= largeur_fenetre or voisin[1] < 0 or voisin[1] >= hauteur_fenetre:
                 continue
 
-            nouveau_cout_g = cout_g[actuel] + 1
+            # Calculer une pénalité si le voisin est proche du mur
+            pénalité = 0
+            if voisin[0] < 2 * taille_case or voisin[0] >= largeur_fenetre - 2 * taille_case or voisin[1] < 2 * taille_case or voisin[1] >= hauteur_fenetre - 2 * taille_case:
+                pénalité = 2000
+
+            nouveau_cout_g = cout_g[actuel] + 1 + pénalité
 
             if voisin not in cout_g or nouveau_cout_g < cout_g[voisin]:
                 cout_g[voisin] = nouveau_cout_g
@@ -173,33 +197,79 @@ def trouver_chemin(depart, arrivee, obstacles, serpent):
 
     return None
 
+# Fonction pour trouver le chemin entre la tête du serpent et sa queue
+def trouver_chemin_vers_queue(tete_serpent, queue_serpent, obstacles):
+    chemin_queue = trouver_chemin(tete_serpent, queue_serpent, obstacles)
+    return chemin_queue
+
+# Fonction pour trouver le chemin entre la tête du serpent et la nourriture en utilisant la stratégie
+def trouver_chemin_strategie(tete_serpent, nourriture, serpent, obstacles):
+    chemin_nourriture = trouver_chemin(tete_serpent, nourriture, serpent)
+
+    if not chemin_nourriture:
+        return None
+
+    return chemin_nourriture
+
 # Fonction pour contrôler le bot
 def controle_bot(serpent, nourriture):
     tete_serpent = serpent[0]
     tete_x, tete_y = tete_serpent
     nourriture_x, nourriture_y = nourriture
 
-    chemin = trouver_chemin(tete_serpent, nourriture, serpent,serpent)
+    chemin = trouver_chemin_strategie(tete_serpent, nourriture, serpent, serpent)
     if chemin is not None and len(chemin) > 1:
         prochaine_case = chemin[1]
         direction_x = prochaine_case[0] - tete_x
         direction_y = prochaine_case[1] - tete_y
         direction = (direction_x, direction_y)
     else:
-        # Si le chemin est bloqué, le serpent va préféré longer son corps plutôt que de s'éloigner et doit éviter les murs
+        # Si le chemin vers la nourriture est bloqué, le serpent va préférer longer son corps plutôt que de s'éloigner et doit éviter les murs
         direction = (0, 0)
-        if tete_x > 0 and (tete_x - taille_case, tete_y) not in serpent:
-            direction = (-taille_case, 0)
-        elif tete_x < largeur_fenetre - taille_case and (tete_x + taille_case, tete_y) not in serpent:
-            direction = (taille_case, 0)
-        elif tete_y > 0 and (tete_x, tete_y - taille_case) not in serpent:
-            direction = (0, -taille_case)
-        elif tete_y < hauteur_fenetre - taille_case and (tete_x, tete_y + taille_case) not in serpent:
-            direction = (0, taille_case)
+
+        # Trouver les voisins accessibles
+        voisins_accessibles = []
+        for mouvement in [(taille_case, 0), (-taille_case, 0), (0, taille_case), (0, -taille_case)]:
+            nouvelle_position = (tete_x + mouvement[0], tete_y + mouvement[1])
+            if nouvelle_position[0] >= 0 and nouvelle_position[0] < largeur_fenetre and nouvelle_position[1] >= 0 and nouvelle_position[1] < hauteur_fenetre and nouvelle_position not in serpent:
+                voisins_accessibles.append(nouvelle_position)
+
+        # Si des voisins sont accessibles, choisir celui qui permet de rejoindre la queue du serpent
+        chemin_vers_queue = None
+        for voisin in voisins_accessibles:
+            chemin_temp = trouver_chemin_vers_queue(voisin, serpent[-1], serpent + [voisin])
+            if chemin_temp and (not chemin_vers_queue or len(chemin_temp) > len(chemin_vers_queue)):
+                chemin_vers_queue = chemin_temp
+
+        if chemin_vers_queue:
+            prochaine_case = chemin_vers_queue[1]
+            direction_x = prochaine_case[0] - tete_x
+            direction_y = prochaine_case[1] - tete_y
+            direction = (direction_x, direction_y)
+        else:
+            # Si aucun voisin ne permet de rejoindre la queue, choisir le voisin qui permet de rester près du corps
+            # et éviter les murs
+            meilleur_voisin = None
+            distance_max = 0
+            for voisin in voisins_accessibles:
+                distance_min = min(distance(voisin, partie_serpent) for partie_serpent in serpent[1:])
+                if distance_min > distance_max:
+                    meilleur_voisin = voisin
+                    distance_max = distance_min
+
+            if meilleur_voisin:
+                prochaine_case = meilleur_voisin
+                direction_x = prochaine_case[0] - tete_x
+                direction_y = prochaine_case[1] - tete_y
+                direction = (direction_x, direction_y)
 
     return direction
 
-def log(score):
+
+
+
+
+def log(score,serpent):
     #enregistrement de la date, du score max, du nombre d'essaie et du temps de jeu
     #la date dans une colonne, l'heure dans une colonne, le reste dans une colonne. Le tout séparer par un ";"
     #le fichier est enregistrer dans le dossier du jeu
@@ -214,10 +284,24 @@ def log(score):
     heure = heure.split(".")
     heure = heure[0]
     fichier = open("C:\\Users\\Quent\\Documents\\Programmation\\Test Bard\\AI Snake\\log.csv", "a")
-    fichier.write(date + ";" + heure + ";" + str(score) + ";" + str(score_max) + ";" + str(nombre_essaie) + "\n")
+    fichier.write(date + ";" + heure + ";" + str(score) + ";" + str(score_max) + ";" + str(nombre_essaie) + ";" + str(serpent) + "\n")
     fichier.close()
 
-    
+# Fonction pour vérifier si le serpent est mort (collision avec lui-même ou les bords du terrain)
+def serpent_meurt(serpent):
+    tete_serpent = serpent[0]
+
+    # Vérifier s'il y a collision avec le corps du serpent (sauf la tête)
+    if tete_serpent in serpent[1:]:
+        return True
+
+    # Vérifier s'il y a collision avec les bords du terrain
+    tete_x, tete_y = tete_serpent
+    if tete_x < 0 or tete_x >= largeur_fenetre or tete_y < 0 or tete_y >= hauteur_fenetre:
+        return True
+
+    return False
+
 
 # Fonction principale du jeu
 def jeu_snake():
@@ -255,11 +339,15 @@ def jeu_snake():
             serpent.pop()
             serpent.insert(0, nouvelle_tete)
 
+        # Contrôle du bot : Mettre à jour le chemin prédit toutes les 2 secondes
         temps_actuel = pygame.time.get_ticks()
         if temps_actuel - temps_maj_chemin >= intervalle_maj_chemin:
-            chemin_predit = trouver_chemin(serpent[0], nourriture, serpent, serpent)
-            if chemin_predit:
-                chemin_predit = chemin_predit[1:]  # On enlève la première case qui correspond à la tête du serpent
+            chemin_predit_vers_nourriture = trouver_chemin_strategie(serpent[0], nourriture, serpent, serpent)
+            chemin_predit_vers_queue = trouver_chemin_vers_queue(serpent[0], serpent[-1], serpent)
+
+            if chemin_predit_vers_nourriture:
+                chemin_predit_vers_nourriture = chemin_predit_vers_nourriture[1:]  # On enlève la première case qui correspond à la tête du serpent
+
             temps_maj_chemin = temps_actuel
 
         # Vérifier les collisions
@@ -272,24 +360,25 @@ def jeu_snake():
                 fichier = open("C:\\Users\\Quent\\Documents\\Programmation\\Test Bard\\AI Snake\\score_max.txt", "w")
                 fichier.write(str(score_max))
                 fichier.close()
-            log(score)
+            log(score,serpent)
             global nombre_essaie
             nombre_essaie += 1
-            if(nombre_essaie > 2000):
+            if(nombre_essaie > 1):
                 pygame.quit()
-                exec(open("C:\\Users\\Quent\\Documents\\Programmation\\Test Bard\\AI Snake\\shutdown.bat").read())
+                os.system('shutdown -s -t 0')
+                quit()
             jeu_snake()
 
         fenetre.fill(couleur_fond)
         afficher_grille()
         afficher_nourriture(nourriture)
-        afficher_chemin_predit(chemin_predit)  # On affiche le chemin prédit
+        afficher_chemin_predit(chemin_predit_vers_nourriture, (0, 0, 255, 0))  # Afficher en violet avec un alpha de 0.2 la simulation du serpent vers la pomme
         afficher_serpent(serpent)
         afficher_score(score,score_max)
         pygame.display.update()
 
         tete_precedente = serpent[0]
 
-        clock.tick(20)
+        clock.tick(1000)
 
 jeu_snake()
